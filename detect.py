@@ -1,4 +1,5 @@
 import sys
+import os
 import joblib
 import numpy as np
 import pandas as pd
@@ -30,12 +31,12 @@ from prompt_toolkit.input import create_input # For explicit input/output
 from prompt_toolkit.output import create_output
 
 
-console = Console()
+
 
 # --- LLM Integration Placeholder ---
 # NOTE: This is a placeholder. For real functionality, you would integrate with an actual LLM API
 # (e.g., Google's Gemini API, OpenAI API). This requires API keys and handling API responses.
-def get_llm_response(user_message):
+def get_llm_response(user_message, console):
     """Simulates an LLM response or acts as a placeholder for actual LLM API integration."""
     with console.status("[italic dim]AI is thinking...[/italic dim]", spinner="point") as status: # Use status for temporary message
         time.sleep(2) # Simulate processing time
@@ -147,8 +148,6 @@ def is_valid_url(url):
     except ValueError:
         return False
 
-# --- Main Conversational Loop with Rich UI ---
-
 # Function to render chat history for rich.Live
 def make_chat_history_renderable(history):
     renderables = []
@@ -166,6 +165,33 @@ def make_chat_history_renderable(history):
         # Add some space between messages
         renderables.append(Text("\n"))
     return Columns(renderables, padding=1) # Use Columns to arrange messages
+
+# Helper function to print chat history and welcome message
+def _print_chat_history(console, welcome_panel_content_text, chat_history):
+    console.clear() # Clear screen at the start of each turn
+
+    # Print welcome message
+    console.print(welcome_panel_content_text)
+
+    # Print chat history
+    for entry in chat_history[-8:]: # Show last 8 messages
+        if entry["role"] == "user":
+            console.print(
+                Panel(Text(entry["content"], style="cyan"), title="[bold cyan]You[/bold cyan]", border_style="cyan", expand=True, title_align="left")
+            )
+        else: # AI response
+            if isinstance(entry["content"], Panel):
+                console.print(entry["content"])
+            else:
+                console.print(Panel(Text(entry["content"], style="magenta"), title="[bold magenta]AI[/bold magenta]", border_style="magenta", expand=True, title_align="left"))
+        console.print(Text("\n")) # Add some space
+
+    console.print(Rule(characters="═", style="blue")) # Separator before input
+
+
+# --- Main Conversational Loop with Rich UI ---
+
+
 
 def main():
     model_path = None
@@ -187,6 +213,7 @@ def main():
                 ))
                 sys.exit(1)
 
+    # console.clear() # Clear terminal on start
     # Welcome Panel Content
     welcome_panel_content_text = Text.from_markup(
         f"✨ [bold green]Phishing URL Detector & Chat Assistant[/bold green] ✨\n"
@@ -194,22 +221,13 @@ def main():
         f"I'm ready to chat! Ask me anything or paste a URL for analysis.\n"
         f"Type '[bold yellow]exit[/bold yellow]' to quit."
     )
-    console.print(Panel(
-        Align.center(welcome_panel_content_text),
-        title="[bold magenta]Welcome[/bold magenta]",
-        border_style="purple",
-        box=box.DOUBLE,
-        expand=True,
-        padding=(1,2)
-    ))
 
     # Chat history
     chat_history = []
 
     # Initialize prompt_toolkit session
     # Explicitly create input/output for prompt_toolkit to try and improve compatibility
-    pt_input = create_input()
-    pt_output = create_output()
+
 
     pt_style = Style.from_dict({
         'prompt': 'bold yellow',
@@ -218,129 +236,119 @@ def main():
         'bottom-toolbar': 'reverse ansigreen',
         'bottom-toolbar.text': '#ffffff',
     })
+    pt_input = create_input()
+    pt_output = create_output()
+
     session = PromptSession(
         style=pt_style,
         input=pt_input, # Pass explicit input
         output=pt_output, # Pass explicit output
     )
 
-    # Use rich.Live for dynamic chat history display
-    # Set console=console in Live to ensure it uses rich's configured console
-    with Live(console=console, auto_refresh=True, vertical_overflow="visible") as live: # Removed screen=True
-        while True:
-            try:
-                # Update the live display with current chat history
-                live.update(make_chat_history_renderable(chat_history))
+    console = Console()
 
-                # Separator before input, printed by console outside live context
-                # This ensures the Rule doesn't interfere with live updates of chat history
-                console.print(Rule(characters="═", style="blue"))
+    while True:
+        _print_chat_history(console, welcome_panel_content_text, chat_history)
 
-                # --- Input section using prompt_toolkit for chat ---
-                # The prompt is handled by prompt_toolkit directly
-                user_input = session.prompt(HTML('<ansiyellow><b>🚀 You:</b></ansiyellow> ')).strip()
-                
-                if user_input.lower() == 'exit':
-                    console.print(Text("\nExiting. Goodbye! 👋", style="bold green"))
-                    break
-                
-                if not user_input:
-                    continue
+        try:
+            user_input = session.prompt(HTML('<ansiyellow><b>🚀 You:</b></ansiyellow> ')).strip()
 
-                chat_history.append({"role": "user", "content": user_input})
+            if user_input.lower() == 'exit':
+                console.print(Text("\nExiting. Goodbye! 👋", style="bold green"))
+                break
+            
+            if not user_input:
+                continue
 
-                # --- Intent Recognition ---
-                # Check if input looks like a URL
-                if " " not in user_input and (user_input.startswith("http://") or user_input.startswith("https://") or user_input.startswith("ftp://")):
-                    # User provided a URL, invoke detection
-                    with console.status("[italic dim]AI is processing the URL...[/italic dim]", spinner="point") as status:
-                        # Initialize icon/color variables with defaults before use
-                        status_icon_val = "❓"
-                        status_color_val = "grey"
-                        reachability_icon_val = "❓"
-                        reachability_color_val = "grey"
-                        status_code_val = None
-                        reachability_val = "N/A"
+            chat_history.append({"role": "user", "content": user_input})
 
-                        status_code_val, reachability_val = check_url_availability(user_input)
+            # --- Intent Recognition ---
+            if " " not in user_input and (user_input.startswith("http://") or user_input.startswith("https://") or user_input.startswith("ftp://")):
+                # User provided a URL, invoke detection
+                with console.status("[italic dim]AI is processing the URL...[/italic dim]", spinner="point") as status:
+                    status_icon_val = "❓" # Initialize
+                    status_color_val = "grey"
+                    reachability_icon_val = "❓"
+                    reachability_color_val = "grey"
+                    status_code_val, reachability_val = check_url_availability(user_input)
 
-                        status_icon_val = "✅" if status_code_val and 200 <= status_code_val < 400 else "⚠️" if status_code_val and 400 <= status_code_val < 500 else "❌"
-                        status_color_val = "green" if status_code_val and 200 <= status_code_val < 400 else "yellow" if status_code_val and 400 <= status_code_val < 500 else "red"
-                        reachability_icon_val = "✅" if reachability_val == "Reachable" else "❌"
-                        reachability_color_val = "green" if reachability_val == "Reachable" else "red"
+                    status_icon_val = "✅" if status_code_val and 200 <= status_code_val < 400 else "⚠️" if status_code_val and 400 <= status_code_val < 500 else "❌"
+                    status_color_val = "green" if status_code_val and 200 <= status_code_val < 400 else "yellow" if status_code_val and 400 <= status_code_val < 500 else "red"
+                    reachability_icon_val = "✅" if reachability_val == "Reachable" else "❌"
+                    reachability_color_val = "green" if reachability_val == "Reachable" else "red"
 
-                    with console.status("[italic magenta]🧠 Analyzing URL for phishing characteristics...[/italic magenta]", spinner="line") as status:
-                        detection_results = detect_phishing_url(user_input, model_path)
-                        
-                        if len(detection_results) == 5:
-                            classification, risk, confidence, error_message, features_dict_for_heuristic = detection_results
-                        else: # Fallback for old detect_phishing_url signature if needed
-                            classification, risk, confidence, error_message = detection_results
-                            features_dict_for_heuristic = extract_features(user_input) # Re-extract if not returned
-
-                    if error_message:
-                        ai_response = f"Error during URL detection: {error_message}"
+                with console.status("[italic magenta]🧠 Analyzing URL for phishing characteristics...[/italic magenta]", spinner="line") as status:
+                    detection_results = detect_phishing_url(user_input, model_path)
+                    
+                    if len(detection_results) == 5:
+                        classification, risk, confidence, error_message, features_dict_for_heuristic = detection_results
                     else:
-                        # --- Post-processing Heuristic ---
-                        if (classification == "Legitimate" or classification == "Suspicious") and reachability_val != "Reachable":
-                            if features_dict_for_heuristic.get('is_suspicious_tld', 0) == 1 or features_dict_for_heuristic.get('has_uncommon_tld', 0) == 1:
-                                if features_dict_for_heuristic.get('is_suspicious_tld', 0) == 1:
-                                    classification = "Phishing"
-                                    risk = "HIGH"
-                                    confidence = max(confidence, 70.0)
-                                    heuristic_message = "📢 Heuristic applied: Unreachable URL with [bold red]suspicious TLD[/bold red] detected. Elevated to Phishing."
-                                else:
-                                    classification = "Suspicious"
-                                    risk = "MEDIUM"
-                                    confidence = max(confidence, 50.0)
-                                    heuristic_message = "📢 Heuristic applied: Unreachable URL with [bold yellow]uncommon TLD[/bold yellow] detected. Elevated to Suspicious."
-                                console.print(Text(heuristic_message, style="bold yellow"))
-                        
-                        # Construct rich results table
-                        result_table = Table(
-                            style="cyan", box=box.ROUNDED, show_header=False, width=None
-                        )
-                        result_table.add_column("Property", justify="right", style="bold blue")
-                        result_table.add_column("Value", justify="left")
+                        classification, risk, confidence, error_message = detection_results
+                        features_dict_for_heuristic = extract_features(user_input)
 
-                        class_color = "red" if classification == "Phishing" else "yellow" if classification == "Suspicious" else "green"
-                        class_icon = "🎣" if classification == "Phishing" else "🧐" if classification == "Suspicious" else "✅"
-                        risk_color = "red" if risk == "HIGH" else "yellow" if risk == "MEDIUM" else "green"
-                        risk_icon = "🔥" if risk == "HIGH" else "⚠️" if risk == "MEDIUM" else "🛡️"
-
-                        result_table.add_row(Text("Classification:", style="bold"), Text(f"{class_icon} {classification}", style=class_color))
-                        result_table.add_row(Text("Risk Level:", style="bold"), Text(f"{risk_icon} {risk}", style=risk_color))
-                        result_table.add_row(Text("Confidence:", style="bold"), Text(f"{confidence:.2f}%", style="bold magenta"))
-                        result_table.add_row(Text("HTTP Status:", style="bold"), Text(f"{status_icon_val} {status_code_val if status_code_val else 'N/A'}", style=status_color_val))
-                        result_table.add_row(Text("Reachability:", style="bold"), Text(f"{reachability_icon_val} {reachability_val}", style=reachability_color_val))
-                        
-                        ai_response = Panel(
-                            result_table,
-                            title=Text(f"Analysis for: [bold white]{user_input}[/bold white]", style="bold blue", justify="left"),
-                            border_style="green", box=box.HEAVY, expand=True, padding=(1, 2)
-                        )
-                    chat_history.append({"role": "ai", "content": ai_response})
+                if error_message:
+                    ai_response = f"Error during URL detection: {error_message}"
                 else:
-                    # User message is not a URL, pass to LLM placeholder
-                    ai_response_text = get_llm_response(user_input)
-                    chat_history.append({"role": "ai", "content": ai_response_text})
+                    if (classification == "Legitimate" or classification == "Suspicious") and reachability_val != "Reachable":
+                        if features_dict_for_heuristic.get('is_suspicious_tld', 0) == 1 or features_dict_for_heuristic.get('has_uncommon_tld', 0) == 1:
+                            if features_dict_for_heuristic.get('is_suspicious_tld', 0) == 1:
+                                classification = "Phishing"
+                                risk = "HIGH"
+                                confidence = max(confidence, 70.0)
+                                heuristic_message = "📢 Heuristic applied: Unreachable URL with [bold red]suspicious TLD[/bold red] detected. Elevated to Phishing."
+                            else:
+                                classification = "Suspicious"
+                                risk = "MEDIUM"
+                                confidence = max(confidence, 50.0)
+                                heuristic_message = "📢 Heuristic applied: Unreachable URL with [bold yellow]uncommon TLD[/bold yellow] detected. Elevated to Suspicious."
+                            chat_history.append({"role": "ai", "content": Text(heuristic_message, style="bold yellow")})
+                    
+                    result_table = Table(
+                        style="cyan", box=box.ROUNDED, show_header=False, width=None
+                    )
+                    result_table.add_column("Property", justify="right", style="bold blue")
+                    result_table.add_column("Value", justify="left")
 
-            except EOFError:
-                console.print(Text("\nExiting due to EOF (Ctrl+D). Goodbye! 👋", style="bold green"))
-                break
-            except KeyboardInterrupt:
-                console.print(Text("\nExiting due to user interruption (Ctrl+C). Goodbye! 👋", style="bold green"))
-                break
-            except Exception as e:
-                error_panel_content = Text(f"An unexpected error occurred: {e}", justify="center", style="bold red")
-                console.print(Panel(
-                    error_panel_content,
-                    title="[bold red]Runtime Error[/bold red]",
-                    border_style="red"
-                ))
-                chat_history.append({"role": "ai", "content": error_panel_content})
-                # Re-raise to ensure Live exits gracefully or reset properly
-                raise # Re-raise to ensure prompt_toolkit also exits or reset properly
+                    class_color = "red" if classification == "Phishing" else "yellow" if classification == "Suspicious" else "green"
+                    class_icon = "🎣" if classification == "Phishing" else "🧐" if classification == "Suspicious" else "✅"
+                    risk_color = "red" if risk == "HIGH" else "yellow" if risk == "MEDIUM" else "green"
+                    risk_icon = "🔥" if risk == "HIGH" else "⚠️" if risk == "MEDIUM" else "🛡️"
+
+                    result_table.add_row(Text("Classification:", style="bold"), Text(f"{class_icon} {classification}", style=class_color))
+                    result_table.add_row(Text("Risk Level:", style="bold"), Text(f"{risk_icon} {risk}", style=risk_color))
+                    result_table.add_row(Text("Confidence:", style="bold"), Text(f"{confidence:.2f}%", style="bold magenta"))
+                    result_table.add_row(Text("HTTP Status:", style="bold"), Text(f"{status_icon_val} {status_code_val if status_code_val else 'N/A'}", style=status_color_val))
+                    result_table.add_row(Text("Reachability:", style="bold"), Text(f"{reachability_icon_val} {reachability_val}", style=reachability_color_val))
+                    
+                    ai_response = Panel(
+                        result_table,
+                        title=Text(f"Analysis for: [bold white]{user_input}[/bold white]", style="bold blue", justify="left"),
+                        border_style="green", box=box.HEAVY, expand=True, padding=(1, 2)
+                    )
+                chat_history.append({"role": "ai", "content": ai_response})
+
+            else:
+                ai_response_text = get_llm_response(user_input, console)
+                chat_history.append({"role": "ai", "content": ai_response_text})
+
+        except EOFError:
+            console.print(Text("\nExiting due to EOF (Ctrl+D). Goodbye! 👋", style="bold green"))
+            break
+        except KeyboardInterrupt:
+            console.print(Text("\nExiting due to user interruption (Ctrl+C). Goodbye! 👋", style="bold green"))
+            break
+        except Exception as e:
+            error_panel_content = Text(f"An unexpected error occurred: {e}", justify="center", style="bold red")
+            console.print(Panel(
+                error_panel_content,
+                title="[bold red]Runtime Error[/bold red]",
+                border_style="red"
+            ))
+            chat_history.append({"role": "ai", "content": error_panel_content})
+            break # Exit cleanly on unexpected errors
+
+    # console.print(Text("\nExiting. Goodbye! 👋", style="bold green")) # Moved inside exit condition
+
 
 
 if __name__ == '__main__':
